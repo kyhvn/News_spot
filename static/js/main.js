@@ -1,6 +1,13 @@
 /**
- * News Spot - Main Application
+ * News Spot - Main Application (Optimized)
  * با انیمیشن اسکرول، دکمه بازگشت به بالا، لوگوهای شناور و دکمه‌های مودال
+ *
+ * بهینه‌سازی‌ها:
+ * - Batch rendering برای Stream (هر 250ms)
+ * - Duplicate check با Set (O(1))
+ * - Append-only rendering برای کارت‌های جدید
+ * - Event Delegation برای Sidebar
+ * - جلوگیری از rebuild مکرر Sidebar و Grid
  */
 
 // ============================================
@@ -12,6 +19,7 @@ const CONSTANTS = {
     SEARCH_DEBOUNCE: 200,
     THEME_COLORS: { light: '#f5f0eb', dark: '#0d0a08' },
     SCROLL_THRESHOLD: 300,
+    STREAM_BATCH_DELAY: 250,
     CATEGORY_ICONS: {
         'سیاسی': '🏛️', 'سیاست': '🏛️', 'اقتصادی': '💰', 'اقتصاد': '💰',
         'ورزشی': '⚽', 'ورزش': '⚽', 'فناوری': '💻', 'تکنولوژی': '💻',
@@ -43,7 +51,13 @@ const state = {
     totalFeeds: 0,
     isStreaming: false,
     streamNews: [],
-    firstBatchReceived: false
+    firstBatchReceived: false,
+    // NEW: Optimizations
+    pendingStreamNews: [],
+    renderTimer: null,
+    newsKeys: new Set(),
+    lastCategorySignature: '',
+    sidebarListenerAttached: false
 };
 
 // ============================================
@@ -115,7 +129,7 @@ class LoadingManager {
         this.loadedFeeds = 0;
         this.isVisible = true;
         DOM.feedsGrid.innerHTML = '';
-        
+
         DOM.loadingOverlay.classList.add('active');
         DOM.loadingOverlay.classList.remove('fade-out');
         this.updateProgress();
@@ -146,9 +160,9 @@ class LoadingManager {
         DOM.statusIcon.textContent = msg.icon;
         DOM.statusText.textContent = msg.text;
         DOM.statusSub.textContent = msg.sub;
-        
+
         DOM.statusDot.className = 'status-dot ' + msg.dot;
-        DOM.connectionStatus.textContent = 
+        DOM.connectionStatus.textContent =
             status === 'connecting' ? 'در حال اتصال...' :
             status === 'fetching' ? 'دریافت اطلاعات...' :
             status === 'processing' ? 'پردازش...' :
@@ -280,15 +294,38 @@ function getCategoryIcon(name) {
     return CONSTANTS.CATEGORY_ICONS[name] || '📁';
 }
 
+// ============================================
+// NEW: Optimized Duplicate Handling
+// ============================================
+function getNewsKey(item) {
+    const title = (item.title || '').trim().toLowerCase();
+    const link = (item.link || '').trim();
+    return title.length > 10 ? `title:${title}` : `link:${link}`;
+}
+
+function addNewsItems(newsItems) {
+    if (!Array.isArray(newsItems) || !newsItems.length) return 0;
+    let added = 0;
+    for (const item of newsItems) {
+        if (!item) continue;
+        const key = getNewsKey(item);
+        if (state.newsKeys.has(key)) continue;
+        if (!item.category && item.source) item.category = item.source;
+        state.newsKeys.add(key);
+        state.allNews.push(item);
+        added++;
+    }
+    return added;
+}
+
+// Legacy support: برای fallback که آرایه می‌گیرد
 function removeDuplicateNews(newsArray) {
-    const seen = new Map();
     const uniqueNews = [];
+    const seen = new Set();
     for (const item of newsArray) {
-        const title = (item.title || '').trim().toLowerCase();
-        const link = (item.link || '').trim();
-        const key = title.length > 10 ? title : link;
+        const key = getNewsKey(item);
         if (!seen.has(key)) {
-            seen.set(key, true);
+            seen.add(key);
             if (!item.category && item.source) item.category = item.source;
             uniqueNews.push(item);
         }
@@ -323,10 +360,7 @@ function handleScroll() {
 }
 
 DOM.backToTop.addEventListener('click', () => {
-    window.scrollTo({
-        top: 0,
-        behavior: 'smooth'
-    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 });
 
 window.addEventListener('scroll', debounce(handleScroll, 50));
@@ -397,10 +431,11 @@ function setupIntersectionObserver() {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
                 entry.target.classList.add('visible');
+                io.unobserve(entry.target); // OPTIMIZE: فقط یک بار observe
             }
         });
-    }, { 
-        threshold: 0.1, 
+    }, {
+        threshold: 0.1,
         rootMargin: '0px 0px -50px 0px'
     });
     document.querySelectorAll('.news-card').forEach(card => io.observe(card));
@@ -423,6 +458,9 @@ function showToast(msg) {
 // Streaming Fetch
 // ============================================
 async function fetchNewsStream() {
+    // OPTIMIZE: جلوگیری از چند Stream همزمان
+    if (state.isStreaming) return;
+
     try {
         const feedsResponse = await fetch('/api/feeds');
         const feedsData = await feedsResponse.json();
@@ -430,33 +468,33 @@ async function fetchNewsStream() {
     } catch (e) {
         state.totalFeeds = 0;
     }
-    
+
     loadingManager.show(state.totalFeeds || 50);
     state.isStreaming = true;
     state.streamNews = [];
     state.firstBatchReceived = false;
     state.lastFetchTime = Date.now();
     DOM.grid.setAttribute('aria-busy', 'true');
-    
+
     try {
         const eventSource = new EventSource('/api/news/stream');
         let receivedNews = [];
         let firstBatchSent = false;
-        
+
         eventSource.onmessage = function(event) {
             try {
                 const data = JSON.parse(event.data);
-                
+
                 switch (data.type) {
                     case 'start':
                         loadingManager.updateDetail('🔄 اتصال به منابع خبری...');
                         break;
-                    
+
                     case 'news':
                         if (data.item) {
                             receivedNews.push(data.item);
                             state.streamNews.push(data.item);
-                            
+
                             if (!firstBatchSent) {
                                 if (receivedNews.length >= 3) {
                                     firstBatchSent = true;
@@ -470,7 +508,7 @@ async function fetchNewsStream() {
                             }
                         }
                         break;
-                    
+
                     case 'first_batch':
                         if (!firstBatchSent && receivedNews.length > 0) {
                             firstBatchSent = true;
@@ -479,7 +517,7 @@ async function fetchNewsStream() {
                             loadingManager.updateDetail(`⚡ ${receivedNews.length} خبر جدید دریافت شد`);
                         }
                         break;
-                    
+
                     case 'progress':
                         if (data.source) {
                             loadingManager.feedLoaded(data.source);
@@ -488,21 +526,30 @@ async function fetchNewsStream() {
                             loadingManager.updateDetail(`📰 ${data.loaded} خبر از ${data.feeds_completed} منبع`);
                         }
                         break;
-                    
+
                     case 'error':
                         if (data.source) {
                             loadingManager.feedFailed(data.source);
                         }
                         break;
-                    
+
                     case 'complete':
+                        // OPTIMIZE: پاک کردن Timer و flush کردن Queue
+                        if (state.renderTimer) {
+                            clearTimeout(state.renderTimer);
+                            state.renderTimer = null;
+                        }
+                        if (state.pendingStreamNews.length) {
+                            addNewsItems(state.pendingStreamNews.splice(0));
+                        }
+
                         loadingManager.complete();
                         eventSource.close();
                         state.isStreaming = false;
-                        finalizeNews(state.streamNews);
+                        finalizeNews();
                         setTimeout(() => loadingManager.hide(), 1000);
                         break;
-                    
+
                     case '[DONE]':
                         eventSource.close();
                         state.isStreaming = false;
@@ -510,13 +557,18 @@ async function fetchNewsStream() {
                             displayStreamedNews(receivedNews);
                             loadingManager.firstBatch();
                         }
+                        // OPTIMIZE: flush باقی‌مانده
+                        if (state.pendingStreamNews.length) {
+                            addNewsItems(state.pendingStreamNews.splice(0));
+                            applyFilters();
+                        }
                         break;
                 }
             } catch (e) {
                 console.error('Error parsing stream data:', e);
             }
         };
-        
+
         eventSource.onerror = function(error) {
             console.error('EventSource error:', error);
             if (!firstBatchSent) {
@@ -527,39 +579,156 @@ async function fetchNewsStream() {
             } else {
                 eventSource.close();
                 state.isStreaming = false;
-                finalizeNews(state.streamNews);
+                finalizeNews();
                 loadingManager.complete();
                 setTimeout(() => loadingManager.hide(), 1000);
             }
         };
-        
+
     } catch (e) {
         console.error('Streaming error:', e);
         loadingManager.error('خطا در دریافت اخبار');
+        state.isStreaming = false;
         fetchNewsFallback();
     }
 }
 
+// ============================================
+// NEW: Batch Render Scheduler
+// ============================================
+function scheduleStreamRender() {
+    if (state.renderTimer) return;
+
+    state.renderTimer = setTimeout(() => {
+        state.renderTimer = null;
+
+        if (!state.pendingStreamNews.length) return;
+
+        const batch = state.pendingStreamNews.splice(0);
+        const added = addNewsItems(batch);
+
+        if (!added) return;
+
+        state.categoryMap = extractCategories(state.allNews);
+        updateSidebar();
+
+        // اگر فیلتر/جستجو فعال است، render کامل
+        if (state.currentCategory !== 'all' || state.searchQuery) {
+            applyFilters();
+        } else {
+            // Append-only برای حالت پیش‌فرض
+            state.filteredNews = state.allNews;
+            appendNewCards(added);
+            DOM.countEl.textContent = String(state.filteredNews.length);
+        }
+
+        DOM.timeEl.textContent = `⏱️ بروزرسانی: ${formatAbsoluteDate(new Date())}`;
+    }, CONSTANTS.STREAM_BATCH_DELAY);
+}
+
+// ============================================
+// NEW: Append-only Rendering
+// ============================================
+function buildCardHtml(item, idx) {
+    const safeTitle = escapeHtml(item.title || CONSTANTS.DEFAULT_TITLE);
+    const safeSummary = escapeHtml(item.summary || 'خلاصه‌ای موجود نیست');
+    const safeAuthor = item.author ? escapeHtml(item.author) : '';
+    const safeLink = escapeHtml(isSafeUrl(item.link) ? item.link : '#');
+    const safeSourceIcon = escapeHtml(item.source_icon || '📰');
+    const safeSourceName = escapeHtml(item.source || '');
+    const safeCategory = escapeHtml(item.category || item.source || 'متفرقه');
+    const tags = Array.isArray(item.tags) ? item.tags : [];
+    const relTime = escapeHtml(formatRelativeDate(item.published));
+    const transId = `trans-${idx}`;
+    const summaryId = `summary-${idx}`;
+    const imageHtml = isSafeUrl(item.image)
+        ? `<img src="${escapeHtml(item.image)}" alt="${safeTitle}" loading="lazy" decoding="async" data-fallback-icon="${safeSourceIcon}">`
+        : `<div class="placeholder-icon" aria-hidden="true">${safeSourceIcon}</div>`;
+
+    return `
+        <div class="news-card" id="card-${idx}" data-idx="${idx}" style="--i:${idx % 12}" tabindex="0" role="button" aria-label="نمایش کامل خبر: ${safeTitle}">
+            <div class="card-image">
+                ${imageHtml}
+                ${relTime ? `<span class="time-badge">${relTime}</span>` : ''}
+                <span class="source-badge">${safeSourceIcon} ${safeSourceName}</span>
+            </div>
+            <div class="card-body">
+                <div class="card-category">${safeCategory}</div>
+                <div class="card-meta-top">
+                    <span class="source-name"><span class="icon" aria-hidden="true">${safeSourceIcon}</span>${safeSourceName}</span>
+                    <span>${relTime}</span>
+                </div>
+                <h3 class="card-title">
+                    <a href="${safeLink}" target="_blank" rel="noopener noreferrer">${safeTitle}</a>
+                </h3>
+                <button type="button" class="translate-toggle" data-idx="${idx}">🌐 ترجمه به فارسی</button>
+                <div class="translated-text" id="${transId}"></div>
+                <p class="card-summary" id="${summaryId}">${safeSummary}</p>
+                <div class="card-footer">
+                    <div class="tags-container">
+                        ${tags.slice(0, 3).map(t => `<span class="tag">#${escapeHtml(String(t).replace(/ /g, '_'))}</span>`).join('')}
+                    </div>
+                    <div class="card-meta-bottom">
+                        ${safeAuthor ? `<span class="author">✍️ ${safeAuthor}</span>` : ''}
+                        <a href="${safeLink}" target="_blank" rel="noopener noreferrer" class="read-more">مشاهده کامل →</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function appendNewCards(count) {
+    if (count <= 0) return;
+
+    const total = state.filteredNews.length;
+    const startIdx = total - count;
+    const newItems = state.filteredNews.slice(startIdx);
+
+    // ساخت HTML برای فقط کارت‌های جدید
+    const html = newItems.map((item, i) => buildCardHtml(item, startIdx + i)).join('');
+
+    // Append به Grid
+    DOM.grid.insertAdjacentHTML('beforeend', html);
+
+    // Observe فقط کارت‌های جدید
+    if (state.observer) {
+        const cards = DOM.grid.querySelectorAll('.news-card');
+        for (let i = startIdx; i < cards.length; i++) {
+            state.observer.observe(cards[i]);
+        }
+    }
+}
+
+// ============================================
+// Update Streamed News (batched)
+// ============================================
+function updateStreamedNews(newsItem) {
+    if (!newsItem) return;
+    state.pendingStreamNews.push(newsItem);
+    scheduleStreamRender();
+}
+
+// ============================================
+// Display First Batch
+// ============================================
 function displayStreamedNews(newsItems) {
     if (!newsItems || newsItems.length === 0) return;
-    state.allNews = removeDuplicateNews([...state.allNews, ...newsItems]);
+
+    addNewsItems(newsItems);
+
     state.categoryMap = extractCategories(state.allNews);
     updateSidebar();
     applyFilters();
+
     DOM.countEl.textContent = String(state.filteredNews.length);
     DOM.timeEl.textContent = `⏱️ بروزرسانی: ${formatAbsoluteDate(new Date())}`;
     DOM.grid.setAttribute('aria-busy', 'false');
 }
 
-function updateStreamedNews(newsItem) {
-    if (!newsItem) return;
-    state.allNews = removeDuplicateNews([...state.allNews, newsItem]);
-    state.categoryMap = extractCategories(state.allNews);
-    updateSidebar();
-    applyFilters();
-    DOM.countEl.textContent = String(state.filteredNews.length);
-}
-
+// ============================================
+// Fallback Fetch (non-streaming)
+// ============================================
 async function fetchNewsFallback() {
     try {
         const res = await fetch('/api/news');
@@ -571,10 +740,16 @@ async function fetchNewsFallback() {
             setTimeout(() => loadingManager.hide(), 2000);
             return;
         }
-        state.allNews = removeDuplicateNews(rawNews);
+
+        // Reset keys و افزودن با addNewsItems
+        state.newsKeys.clear();
+        state.allNews = [];
+        addNewsItems(rawNews);
+
         state.categoryMap = extractCategories(state.allNews);
         updateSidebar();
         applyFilters();
+
         DOM.timeEl.textContent = `⏱️ بروزرسانی: ${formatAbsoluteDate(data.timestamp || new Date())}`;
         loadingManager.complete();
         setTimeout(() => loadingManager.hide(), 1000);
@@ -589,22 +764,67 @@ async function fetchNewsFallback() {
     }
 }
 
-function finalizeNews(newsItems) {
-    if (newsItems && newsItems.length > 0) {
-        state.allNews = removeDuplicateNews([...state.allNews, ...newsItems]);
+// ============================================
+// Finalize News
+// ============================================
+function finalizeNews(newsItems = []) {
+    // flush باقی‌مانده
+    if (state.pendingStreamNews.length) {
+        addNewsItems(state.pendingStreamNews.splice(0));
     }
+
+    if (Array.isArray(newsItems) && newsItems.length) {
+        addNewsItems(newsItems);
+    }
+
     state.categoryMap = extractCategories(state.allNews);
     updateSidebar();
     applyFilters();
+
     DOM.countEl.textContent = String(state.filteredNews.length);
     DOM.timeEl.textContent = `⏱️ بروزرسانی: ${formatAbsoluteDate(new Date())}`;
     DOM.grid.setAttribute('aria-busy', 'false');
 }
 
 // ============================================
-// Sidebar
+// Sidebar (with Event Delegation)
 // ============================================
+function getCategorySignature() {
+    // امضای سبک برای تشخیص تغییر واقعی دسته‌بندی‌ها
+    let sig = '';
+    for (const [key, cat] of state.categoryMap) {
+        sig += `${key}:${cat.count}|`;
+    }
+    return sig;
+}
+
+function attachSidebarListener() {
+    if (state.sidebarListenerAttached) return;
+
+    DOM.sidebarCategories.addEventListener('click', (e) => {
+        const btn = e.target.closest('.sidebar-category');
+        if (!btn) return;
+
+        document.querySelectorAll('.sidebar-category').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.currentCategory = btn.dataset.category;
+        applyFilters();
+
+        if (window.innerWidth <= 1024) {
+            const wrapper = document.querySelector('.sidebar-wrapper');
+            if (wrapper) wrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    });
+
+    state.sidebarListenerAttached = true;
+}
+
 function updateSidebar() {
+    // OPTIMIZE: فقط اگر امضا تغییر کرده، rebuild کن
+    const sig = getCategorySignature();
+    if (sig === state.lastCategorySignature) return;
+    state.lastCategorySignature = sig;
+
     let html = '';
     for (const [key, cat] of state.categoryMap) {
         const isActive = key === state.currentCategory ? 'active' : '';
@@ -617,18 +837,8 @@ function updateSidebar() {
         `;
     }
     DOM.sidebarCategories.innerHTML = html;
-    document.querySelectorAll('.sidebar-category').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.sidebar-category').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            state.currentCategory = btn.dataset.category;
-            applyFilters();
-            if (window.innerWidth <= 1024) {
-                const wrapper = document.querySelector('.sidebar-wrapper');
-                if (wrapper) wrapper.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
-        });
-    });
+
+    attachSidebarListener();
 }
 
 // ============================================
@@ -712,7 +922,7 @@ async function toggleTranslate(item, btn, summaryEl, transEl) {
 }
 
 // ============================================
-// Render News
+// Render News (full rebuild - فقط برای filter/search/first batch)
 // ============================================
 function renderNews() {
     if (!state.filteredNews.length) {
@@ -729,56 +939,10 @@ function renderNews() {
     }
 
     DOM.countEl.textContent = String(state.filteredNews.length);
-    DOM.grid.innerHTML = state.filteredNews.map((item, idx) => {
-        const safeTitle = escapeHtml(item.title || CONSTANTS.DEFAULT_TITLE);
-        const safeSummary = escapeHtml(item.summary || 'خلاصه‌ای موجود نیست');
-        const safeAuthor = item.author ? escapeHtml(item.author) : '';
-        const safeLink = escapeHtml(isSafeUrl(item.link) ? item.link : '#');
-        const safeSourceIcon = escapeHtml(item.source_icon || '📰');
-        const safeSourceName = escapeHtml(item.source || '');
-        const safeCategory = escapeHtml(item.category || item.source || 'متفرقه');
-        const tags = Array.isArray(item.tags) ? item.tags : [];
-        const relTime = escapeHtml(formatRelativeDate(item.published));
-        const transId = `trans-${idx}`;
-        const summaryId = `summary-${idx}`;
-        const imageHtml = isSafeUrl(item.image)
-            ? `<img src="${escapeHtml(item.image)}" alt="${safeTitle}" loading="lazy" decoding="async" data-fallback-icon="${safeSourceIcon}">`
-            : `<div class="placeholder-icon" aria-hidden="true">${safeSourceIcon}</div>`;
-
-        return `
-            <div class="news-card" id="card-${idx}" data-idx="${idx}" style="--i:${idx % 12}" tabindex="0" role="button" aria-label="نمایش کامل خبر: ${safeTitle}">
-                <div class="card-image">
-                    ${imageHtml}
-                    ${relTime ? `<span class="time-badge">${relTime}</span>` : ''}
-                    <span class="source-badge">${safeSourceIcon} ${safeSourceName}</span>
-                </div>
-                <div class="card-body">
-                    <div class="card-category">${safeCategory}</div>
-                    <div class="card-meta-top">
-                        <span class="source-name"><span class="icon" aria-hidden="true">${safeSourceIcon}</span>${safeSourceName}</span>
-                        <span>${relTime}</span>
-                    </div>
-                    <h3 class="card-title">
-                        <a href="${safeLink}" target="_blank" rel="noopener noreferrer">${safeTitle}</a>
-                    </h3>
-                    <button type="button" class="translate-toggle" data-idx="${idx}">🌐 ترجمه به فارسی</button>
-                    <div class="translated-text" id="${transId}"></div>
-                    <p class="card-summary" id="${summaryId}">${safeSummary}</p>
-                    <div class="card-footer">
-                        <div class="tags-container">
-                            ${tags.slice(0, 3).map(t => `<span class="tag">#${escapeHtml(String(t).replace(/ /g, '_'))}</span>`).join('')}
-                        </div>
-                        <div class="card-meta-bottom">
-                            ${safeAuthor ? `<span class="author">✍️ ${safeAuthor}</span>` : ''}
-                            <a href="${safeLink}" target="_blank" rel="noopener noreferrer" class="read-more">مشاهده کامل →</a>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-    }).join('');
+    DOM.grid.innerHTML = state.filteredNews.map((item, idx) => buildCardHtml(item, idx)).join('');
 
     setupGridEventDelegation();
+
     if (state.observer) state.observer.disconnect();
     state.observer = setupIntersectionObserver();
 }
@@ -865,7 +1029,7 @@ function renderModalFor(idx) {
     const sourceName = item.source || 'منبع ناشناخته';
     DOM.modalSource.textContent = `${sourceIcon} ${sourceName}`;
     DOM.modalSourceBadge.textContent = `${sourceIcon} ${sourceName}`;
-    
+
     DOM.modalDate.textContent = formatAbsoluteDate(item.published);
     DOM.modalRelDate.textContent = formatRelativeDate(item.published);
     DOM.modalReadTime.textContent = `⏳ ${estimateReadMinutes(item.summary)} دقیقه مطالعه`;
@@ -940,7 +1104,6 @@ function closeModalOutside(event) {
 function showPrevModal() {
     if (state.modalIndex > 0) {
         renderModalFor(state.modalIndex - 1);
-        // فوکوس روی دکمه قبلی
         DOM.modalPrevBtn.focus();
     }
 }
@@ -948,7 +1111,6 @@ function showPrevModal() {
 function showNextModal() {
     if (state.modalIndex < state.filteredNews.length - 1) {
         renderModalFor(state.modalIndex + 1);
-        // فوکوس روی دکمه بعدی
         DOM.modalNextBtn.focus();
     }
 }
@@ -989,7 +1151,7 @@ DOM.modalShareBtn.addEventListener('click', async () => {
 // کیبورد در مودال
 document.addEventListener('keydown', (e) => {
     if (!DOM.modalOverlay.classList.contains('active')) return;
-    
+
     if (e.key === 'Escape') {
         closeModal();
         return;
@@ -1047,6 +1209,7 @@ document.addEventListener('visibilitychange', () => {
 function init() {
     updateClock();
     state.clockTimer = setInterval(updateClock, 1000);
+    attachSidebarListener(); // یک بار برای همیشه
     fetchNewsStream();
     scheduleAutoRefresh();
     handleScroll();
@@ -1063,7 +1226,7 @@ function init() {
         }
     });
 
-    console.log('📰 News Spot v8.0 — Floating Logos + Modal Navigation ⚡');
+    console.log('📰 News Spot v8.1 — Batched Stream + Append-only Rendering ⚡');
 }
 
 if (document.readyState === 'loading') {
