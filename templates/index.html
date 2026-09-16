@@ -8,6 +8,8 @@
     <meta name="theme-color" id="themeColorMeta" content="#f5f0eb">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📰</text></svg>">
     <title>News Spot</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,600;0,700;1,600&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
@@ -23,19 +25,16 @@
                 <span class="sub">همه اخبار در یک جا</span>
             </a>
             <div class="header-clock" id="headerClock">
-                <div class="clock-icon">🕐</div>
-                <div class="clock-info">
-                    <span class="clock-time" id="clockTime">--:--:--</span>
-                    <span class="clock-date" id="clockDate">در حال بارگذاری...</span>
-                </div>
+                <span class="clock-time" id="clockTime">--:--:--</span>
+                <span class="clock-date" id="clockDate">در حال بارگذاری...</span>
             </div>
             <div class="header-actions">
-                <div class="view-toggle" id="viewToggle" role="group">
+                <div class="view-toggle" id="viewToggle" role="group" aria-label="نمایش">
                     <button type="button" class="active" data-view="grid" title="نمایش شبکه‌ای">▦</button>
                     <button type="button" data-view="list" title="نمایش لیستی">☰</button>
                 </div>
-                <button type="button" class="btn-icon" id="themeToggle" title="تغییر تم">🌓</button>
-                <button type="button" class="btn-icon" id="refreshBtn" title="بروزرسانی">⟳</button>
+                <button type="button" class="btn-icon" id="themeToggle" title="تغییر تم" aria-label="تغییر تم">🌓</button>
+                <button type="button" class="btn-icon" id="refreshBtn" title="بروزرسانی" aria-label="بروزرسانی">⟳</button>
             </div>
         </div>
     </header>
@@ -56,9 +55,27 @@
             </aside>
 
             <!-- ===== CONTENT ===== -->
-            <div>
+            <div class="content-wrapper">
                 <div class="search-bar">
-                    <input class="search-input" id="searchInput" type="text" placeholder="جستجو در اخبار..." dir="rtl">
+                    <input class="search-input" id="searchInput" type="text" placeholder="جستجو در اخبار..." dir="rtl" autocomplete="off">
+                </div>
+
+                <!-- ===== STATUS STRIP (جایگزین overlay) ===== -->
+                <div class="status-strip" id="statusStrip" hidden>
+                    <div class="status-strip-inner">
+                        <div class="status-strip-left">
+                            <span class="status-pulse" id="statusPulse"></span>
+                            <span class="status-strip-text" id="statusStripText">در حال دریافت اخبار...</span>
+                        </div>
+                        <div class="status-strip-right">
+                            <div class="status-mini-progress">
+                                <div class="status-mini-fill" id="statusMiniFill"></div>
+                            </div>
+                            <span class="status-mini-text" id="statusMiniText">0 / 0</span>
+                            <button class="status-strip-close" id="statusStripClose" aria-label="بستن">×</button>
+                        </div>
+                    </div>
+                    <div class="status-strip-chips" id="statusStripChips"></div>
                 </div>
 
                 <div class="stats-bar">
@@ -86,70 +103,19 @@
         <span>بالا</span>
     </button>
 
-    <!-- ===== TOAST ===== -->
-    <div class="toast" id="toast" role="status"></div>
-
-    <!-- ===== LOADING OVERLAY ===== -->
-    <div class="loading-overlay" id="loadingOverlay">
-        <div class="loading-backdrop"></div>
-        <div class="floating-logos" id="floatingLogos">
-            <span class="floating-logo" style="--delay:0s; --duration:12s; --x:10%; --y:15%; --size:3rem;">📰</span>
-            <span class="floating-logo" style="--delay:2s; --duration:14s; --x:85%; --y:10%; --size:2.5rem;">🌍</span>
-            <span class="floating-logo" style="--delay:4s; --duration:16s; --x:20%; --y:80%; --size:2.8rem;">💻</span>
-            <span class="floating-logo" style="--delay:1s; --duration:13s; --x:75%; --y:85%; --size:2.2rem;">⚽</span>
-            <span class="floating-logo" style="--delay:3s; --duration:15s; --x:45%; --y:5%; --size:2rem;">💰</span>
-            <span class="floating-logo" style="--delay:5s; --duration:18s; --x:5%; --y:50%; --size:2.6rem;">🎨</span>
-            <span class="floating-logo" style="--delay:1.5s; --duration:11s; --x:60%; --y:70%; --size:2.3rem;">🔬</span>
-            <span class="floating-logo" style="--delay:3.5s; --duration:17s; --x:90%; --y:45%; --size:2.1rem;">🎭</span>
-            <span class="floating-logo" style="--delay:0.5s; --duration:19s; --x:35%; --y:25%; --size:2.7rem;">📺</span>
-            <span class="floating-logo" style="--delay:2.5s; --duration:13.5s; --x:70%; --y:55%; --size:2.4rem;">🎵</span>
-        </div>
-
-        <div class="loading-container">
-            <div class="loading-brand">
-                <span class="brand-icon">📰</span>
-                <span class="brand-text">News Spot</span>
-            </div>
-
-            <div class="loading-spinner-modern">
-                <div class="spinner-ring"></div>
-                <div class="spinner-ring"></div>
-                <div class="spinner-ring"></div>
-                <div class="spinner-dot"></div>
-            </div>
-
-            <div class="loading-status" id="loadingStatus">
-                <div class="status-icon" id="statusIcon">📡</div>
-                <div class="status-text" id="statusText">در حال اتصال به منابع خبری...</div>
-                <div class="status-sub" id="statusSub">لطفاً چند لحظه صبر کنید</div>
-            </div>
-
-            <div class="loading-progress-modern">
-                <div class="progress-track">
-                    <div class="progress-fill" id="progressBar"></div>
-                </div>
-                <div class="progress-label">
-                    <span id="loadedCount">0</span> / <span id="totalCount">0</span> منبع
-                    <span class="progress-percent" id="progressPercent">0%</span>
-                </div>
-            </div>
-
-            <div class="loading-details-modern" id="loadingDetails">
-                <div class="detail-item" id="detailItem">⏳ در حال آماده‌سازی...</div>
-                <div class="detail-connection-status">
-                    <span class="status-dot" id="statusDot"></span>
-                    <span id="connectionStatus">اتصال برقرار است</span>
-                </div>
-            </div>
-
-            <div class="loading-feeds-grid" id="loadingFeedsGrid"></div>
-        </div>
+    <!-- ===== BACKGROUND REFRESH BADGE ===== -->
+    <div class="refresh-badge" id="refreshBadge" hidden>
+        <span class="refresh-spinner"></span>
+        <span id="refreshBadgeText">در حال بروزرسانی اخبار...</span>
     </div>
+
+    <!-- ===== TOAST ===== -->
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <!-- ===== MODAL ===== -->
     <div class="modal-overlay" id="modalOverlay">
         <div class="modal-container" id="modalContainer" role="dialog" aria-modal="true">
-            
+
             <button class="modal-close-btn" id="modalCloseBtn" aria-label="بستن">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="18" y1="6" x2="6" y2="18"></line>
@@ -157,26 +123,10 @@
                 </svg>
             </button>
 
-            <div class="modal-nav-controls">
-                <button class="modal-nav-btn prev" id="modalPrevBtn" aria-label="خبر قبلی">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="15 18 9 12 15 6"></polyline>
-                    </svg>
-                    <span>قبلی</span>
-                </button>
-                <button class="modal-nav-btn next" id="modalNextBtn" aria-label="خبر بعدی">
-                    <span>بعدی</span>
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="9 18 15 12 9 6"></polyline>
-                    </svg>
-                </button>
-            </div>
-
             <div class="modal-image-wrapper" id="modalImageWrapper">
-                <img class="modal-image" id="modalImage" src="" alt="">
+                <img class="modal-image" id="modalImage" src="" alt="" loading="lazy">
                 <div class="modal-image-overlay">
                     <span class="modal-source-badge" id="modalSourceBadge">📰 منبع</span>
-                    <span class="modal-nav-indicator" id="modalNavIndicator"></span>
                 </div>
             </div>
             <div class="modal-image-placeholder-wrapper" id="modalImagePlaceholderWrapper" style="display:none;">
@@ -220,8 +170,22 @@
                 </div>
             </div>
         </div>
+
+        <!-- Navigation buttons OUTSIDE the modal -->
+        <button class="modal-nav-outside prev" id="modalPrevBtn" aria-label="خبر قبلی">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
+            <span class="nav-label">قبلی</span>
+        </button>
+        <button class="modal-nav-outside next" id="modalNextBtn" aria-label="خبر بعدی">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 18 15 12 9 6"></polyline>
+            </svg>
+            <span class="nav-label">بعدی</span>
+        </button>
     </div>
 
-    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/main.js') }}" defer></script>
 </body>
 </html>
